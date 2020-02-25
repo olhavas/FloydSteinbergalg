@@ -10,7 +10,7 @@
 using namespace cv;
 
 
-extern void FloydSteinbergWrapper(const cv::Mat& in, cv::Mat& out);
+extern void FFTWrapper(const cv::Mat& in, cv::Mat& out);
 
 
 void FSCPU(const cv::Mat& in, cv::Mat& out)
@@ -79,12 +79,11 @@ void FSCPU(const cv::Mat& in, cv::Mat& out)
 int main(void)
 {
 	cv::Mat in;
-
 	in = imread("C:\\Users\\Olga\\source\\repos\\xd\\xd\\vw.jpg", IMREAD_GRAYSCALE);
 
 	cv::Mat out(in.rows, in.cols, CV_8UC1);
 
-	FloydSteinbergWrapper(in, out);
+	FFTWrapper(in, out);
 
 
 	//	FSCPU(in, out);
@@ -93,6 +92,8 @@ int main(void)
 
 	namedWindow("Input", WINDOW_AUTOSIZE);// Create a window for display.
 	imshow("Input", in);                   // Show our image inside it.
+
+	cv::imwrite("spectrum_magnitude.jpg", out);
 
 	namedWindow("Output", WINDOW_AUTOSIZE);// Create a window for display.
 	imshow("Output", out);                   // Show our image inside it.

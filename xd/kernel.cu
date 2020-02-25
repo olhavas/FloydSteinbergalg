@@ -1,30 +1,153 @@
-
-#include "cuda_runtime.h"
-#include "device_launch_parameters.h"
+#include <stdio.h>    
+#include <cuda_runtime.h> 
 #include <opencv2/core/mat.hpp>
+#include <opencv2/core/core.hpp>
+#include <opencv2/highgui/highgui.hpp>
+#include <opencv2/imgproc/imgproc.hpp>
 #include <iostream>
 #include <vector>
+#include <cmath>
+#include <cufft.h>
 
-constexpr auto SIZE = 16;
-#define POSITION (((blockIdx.x*SIZE+y)*blockDim.x)*SIZE) + (threadIdx.x*SIZE) + x
+
+//constexpr auto SIZE = 16;
+#define M_PI 3.14159265358979323846 
+//#define POSITION (((blockIdx.x*SIZE+y)*blockDim.x)*SIZE) + (threadIdx.x*SIZE) + x
 
 
-__global__ void multiplication(float *A, float* B, float *C, int N) {
-	int ROW = blockIdx.y*blockDim.y + threadIdx.y;
-	int COL = blockIdx.x*blockDim.x + threadIdx.x;
 
-	if (ROW < N && COL < N) {
 
-		float tmpSum = 0.0;
-		for (int i = 0; i < N; i++) {
-			tmpSum += A[ROW * N + i] * B[i * N + COL];
-		}
-		C[ROW * N + COL] = tmpSum;
+
+
+
+
+void FFTWrapper(const cv::Mat& in, cv::Mat& out)
+{	
+	cv::Mat_<float> img(in);
+	
+	float *h_DataReal = img.ptr<float>(0);
+	cufftComplex *h_DataComplex;
+
+	// Image dimensions
+	const int dataH = img.rows;
+	const int dataW = img.cols;
+
+	// Convert real input to complex
+	h_DataComplex = (cufftComplex *)malloc(dataH * dataW * sizeof(cufftComplex));
+	for (int i = 0; i < dataH*dataW; i++) {
+		h_DataComplex[i].x = h_DataReal[i];
+		h_DataComplex[i].y = 0.0f;
 	}
 
+	// Complex device pointers
+	cufftComplex
+		*d_Data,
+		*d_DataSpectrum,
+		*d_Result,
+		*h_Result;
+
+	// Plans for cuFFT execution
+	cufftHandle
+		fftPlanFwd;
+		//fftPlanInv;
+
+	// Allocate memory
+	h_Result = (cufftComplex *)malloc(dataH    * dataW * sizeof(cufftComplex));
+	cudaMalloc((void **)&d_DataSpectrum, dataH * dataW * sizeof(cufftComplex));
+	cudaMalloc((void **)&d_Data, dataH   * dataW * sizeof(cufftComplex));
+	cudaMalloc((void **)&d_Result, dataH * dataW * sizeof(cufftComplex));
 
 
+	// Copy image to GPU
+	cudaMemcpy(d_Data, h_DataComplex, dataH   * dataW * sizeof(cufftComplex), cudaMemcpyHostToDevice);
+
+
+	// Forward FFT
+	cufftPlan2d(&fftPlanFwd, dataH, dataW, CUFFT_C2C);
+	cufftExecC2C(fftPlanFwd, (cufftComplex *)d_Data, (cufftComplex *)d_Result, CUFFT_FORWARD);
+
+	// Inverse FFT
+	//cufftPlan2d(&fftPlanInv, dataH, dataW, CUFFT_C2C);
+	//cufftExecC2C(fftPlanInv, (cufftComplex *)d_DataSpectrum, (cufftComplex *)d_Result, CUFFT_INVERSE);
+
+	// Copy result to host memory
+	cudaMemcpy(h_Result, d_Result, dataH * dataW * sizeof(cufftComplex), cudaMemcpyDeviceToHost);
+	
+	
+
+	// Convert cufftComplex to OpenCV real and imag Mat
+	cv::Mat_<float> resultReal = cv::Mat_<float>(dataH, dataW);
+	cv::Mat_<float> resultImag = cv::Mat_<float>(dataH, dataW);
+	for (int i = 0; i < dataH; i++) {
+		float* rowPtrReal = resultReal.ptr<float>(i);
+		float* rowPtrImag = resultImag.ptr<float>(i);
+		for (int j = 0; j < dataW; j++) {
+			rowPtrReal[j] = h_Result[i*dataW + j].x / (dataH*dataW);
+			rowPtrImag[j] = h_Result[i*dataW + j].y / (dataH*dataW);
+		}
+	}
+	cv::Mat_<float> resultPhase;
+	phase(resultReal, resultImag, resultPhase);
+	cv::subtract(resultPhase, 2 * M_PI, resultPhase, (resultPhase > M_PI));
+	resultPhase = ((resultPhase + M_PI) * 255) / (2 * M_PI);
+	cv::Mat_<uchar> normalized = cv::Mat_<uchar>(dataH, dataW);
+	resultPhase.convertTo(normalized, CV_8U);
+	// Save phase image
+	cv::imwrite("cuda_propagation_phase.png", resultPhase);
+
+	
+	cufftDestroy(fftPlanFwd);
+	//cufftDestroy(fftPlanInv);
+	cudaFree(d_DataSpectrum);
+	cudaFree(d_Data);
+	cudaFree(d_Result);
+	
+	
+	// Save phase image
+
+
+	// Compute amplitude and normalize to 8 bit
+	cv::Mat_<float> resultAmplitude;
+	magnitude(resultReal, resultImag, resultAmplitude);
+	cv::Mat_<uchar> normalizedAmplitude = cv::Mat_<uchar>(dataH, dataW);
+	resultAmplitude.convertTo(normalizedAmplitude, CV_8U);
+	// Save phase image
+	cv::imwrite("cuda_propagation_amplitude.png", resultAmplitude);
+
+	cv::Mat magI(resultAmplitude);
+	
+
+
+	magI += cv::Scalar::all(1);                    // switch to logarithmic scale
+	cv::log(magI, magI);
+
+	// crop the spectrum, if it has an odd number of rows or columns
+	magI = magI(cv::Rect(0, 0, magI.cols & -2, magI.rows & -2));
+
+	// rearrange the quadrants of Fourier image  so that the origin is at the image center
+	int cx = magI.cols / 2;
+	int cy = magI.rows / 2;
+
+	cv::Mat q0(magI, cv::Rect(0, 0, cx, cy));   // Top-Left - Create a ROI per quadrant
+	cv::Mat q1(magI, cv::Rect(cx, 0, cx, cy));  // Top-Right
+	cv::Mat q2(magI, cv::Rect(0, cy, cx, cy));  // Bottom-Left
+	cv::Mat q3(magI, cv::Rect(cx, cy, cx, cy)); // Bottom-Right
+	cv::Mat tmp;                           // swap quadrants (Top-Left with Bottom-Right)
+	q0.copyTo(tmp);
+	q3.copyTo(q0);
+	tmp.copyTo(q3);
+
+	q1.copyTo(tmp);                    // swap quadrant (Top-Right with Bottom-Left)
+	q2.copyTo(q1);
+	tmp.copyTo(q2);
+
+	cv::normalize(magI, magI, 0, 1, cv::NormTypes::NORM_MINMAX); // Transform the matrix with float values into a
+											// viewable image form (float between values 0 and 1).
+	out = magI.clone();
+	
 }
+
+/*
 __global__
 void FloydSteinberg(unsigned char* input, unsigned char* output, char* error, unsigned int rows, unsigned int cols)
 {
@@ -86,6 +209,8 @@ void FloydSteinberg(unsigned char* input, unsigned char* output, char* error, un
 
 }
 
+
+
 __global__
 void FloydSteinbergST(unsigned char* input, unsigned char* output, char* error, unsigned int rows, unsigned int cols)
 {
@@ -135,8 +260,8 @@ void FloydSteinbergST(unsigned char* input, unsigned char* output, char* error, 
 		}
 	}
 
-}
-
+}*/
+/*
 void FloydSteinbergWrapper(const cv::Mat& in, cv::Mat& out)
 {
 
@@ -174,3 +299,4 @@ void MatrixMulKernel(const std::vector<int>& A, const std::vector<int>& B, std::
 
 
 }
+*/
