@@ -86,8 +86,11 @@ void FFTWrapper(const cv::Mat& in, cv::Mat& out)
 			rowPtrImag[j] = h_Result[i*dataW + j].y / (dataH*dataW);
 		}
 	}
+
 	cv::Mat_<float> resultPhase;
 	phase(resultReal, resultImag, resultPhase);
+
+
 	cv::subtract(resultPhase, 2 * M_PI, resultPhase, (resultPhase > M_PI));
 	resultPhase = ((resultPhase + M_PI) * 255) / (2 * M_PI);
 	cv::Mat_<uchar> normalized = cv::Mat_<uchar>(dataH, dataW);
@@ -115,10 +118,9 @@ void FFTWrapper(const cv::Mat& in, cv::Mat& out)
 	cv::imwrite("cuda_propagation_amplitude.png", resultAmplitude);
 
 	cv::Mat magI(resultAmplitude);
-	
 
 
-	magI += cv::Scalar::all(1);                    // switch to logarithmic scale
+	//magI += cv::Scalar::all(1);                    // switch to logarithmic scale
 	cv::log(magI, magI);
 
 	// crop the spectrum, if it has an odd number of rows or columns
@@ -143,8 +145,8 @@ void FFTWrapper(const cv::Mat& in, cv::Mat& out)
 
 	cv::normalize(magI, magI, 0, 1, cv::NormTypes::NORM_MINMAX); // Transform the matrix with float values into a
 											// viewable image form (float between values 0 and 1).
-	out = magI.clone();
 	
+	out = magI.clone();
 }
 
 /*
